@@ -36,9 +36,9 @@ async def scan_image(request: LegacyRequest) -> dict:
     logger.info("Scanning file %s with flags %s", path, flags)
     model_manager.load_models_for_flags(flags)
 
-    result: dict = {"file_path": path, "modules": request.modules}
-    meta = None
-    nsfw_score = None
+    result: dict = {"file_path": path}
+    meta: dict | None = None
+    nsfw_score: float | None = None
     tags_data = {"tags": [], "characters": []}
 
     if flags & FLAG_BASIC:
@@ -49,17 +49,19 @@ async def scan_image(request: LegacyRequest) -> dict:
     if flags & FLAG_NSFW:
         logger.info("Running NSFW prediction for %s", path)
         nsfw_score = model_manager.predict_nsfw(path)
-        result["nsfw_score"] = nsfw_score
 
     if flags & FLAG_TAGS:
         logger.info("Running tag prediction for %s", path)
         tags_data = model_manager.predict_tags(path)
-        result["tags"] = tags_data.get("tags", [])
         characters = tags_data.get("characters", [])
         if characters:
             logger.info("Detected character tags: %s", ", ".join(characters))
 
-    db.save_scan_result(file_hash, path, flags, meta=meta, nsfw_score=nsfw_score)
+    result["statistics"] = meta or {}
+    result["nsfw_score"] = nsfw_score if nsfw_score is not None else 0.0
+    result["tags"] = tags_data.get("tags", [])
+
+    db.upsert_scan_result(file_hash, path, flags, meta=meta, nsfw_score=nsfw_score)
     if tags_data.get("tags") or tags_data.get("characters"):
         db.save_tags(file_hash, tags_data.get("tags", []), tags_data.get("characters", []))
 

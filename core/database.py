@@ -133,6 +133,48 @@ class ScannerDB:
             )
             connection.commit()
 
+    def upsert_scan_result(
+        self,
+        file_hash: str,
+        path: str,
+        flags_done: int,
+        meta: dict | None = None,
+        nsfw_score: float | None = None,
+    ) -> None:
+        meta_json = json.dumps(meta, ensure_ascii=False) if meta is not None else None
+        scanned_at = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.cursor()
+            cursor.execute("DELETE FROM files WHERE path = ? AND hash != ?", (path, file_hash))
+            cursor.execute(
+                """
+                INSERT INTO files (
+                    hash,
+                    path,
+                    flags_done,
+                    meta_json,
+                    nsfw_score,
+                    last_scanned
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(hash) DO UPDATE SET
+                    path = excluded.path,
+                    flags_done = files.flags_done | excluded.flags_done,
+                    meta_json = COALESCE(excluded.meta_json, files.meta_json),
+                    nsfw_score = COALESCE(excluded.nsfw_score, files.nsfw_score),
+                    last_scanned = excluded.last_scanned
+                """,
+                (
+                    file_hash,
+                    path,
+                    flags_done,
+                    meta_json,
+                    nsfw_score,
+                    scanned_at,
+                ),
+            )
+            connection.commit()
+
     def save_tags(
         self,
         file_hash: str,
