@@ -5,10 +5,10 @@ import os
 from typing import Dict, List, Set
 
 import numpy as np
-import tensorflow as tf
+from tensorflow.keras.models import load_model
 
 from core.bitmask import FLAG_NSFW, FLAG_TAGS
-from core.image_utils import load_image_for_model
+from core.image_utils import prepare_image
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class ModelManager:
         if getattr(self, "_initialized", False):
             return
         self._initialized = True
-        self.models: Dict[str, tf.keras.Model] = {}
+        self.models: Dict[str, object] = {}
         self.nsfw_model_path = os.path.join("models", "nsfw", "model.h5")
         self.tags_model_path = os.path.join("models", "deepdanbooru", "model.h5")
         self.tags_path = os.path.join("models", "deepdanbooru", "tags.txt")
@@ -57,38 +57,44 @@ class ModelManager:
 
     def _load_nsfw_model(self) -> None:
         if not os.path.exists(self.nsfw_model_path):
-            logger.warning("NSFW model not found at %s", self.nsfw_model_path)
+            logger.error("NSFW model not found at %s", self.nsfw_model_path)
             return
         logger.info("Loading NSFW model from %s", self.nsfw_model_path)
-        self.models["nsfw"] = tf.keras.models.load_model(self.nsfw_model_path, compile=False)
+        try:
+            self.models["nsfw"] = load_model(self.nsfw_model_path, compile=False)
+        except OSError:
+            logger.exception("Failed to load NSFW model from %s", self.nsfw_model_path)
 
     def _load_tags_model(self) -> None:
         if not os.path.exists(self.tags_model_path):
-            logger.warning("Tag model not found at %s", self.tags_model_path)
+            logger.error("Tag model not found at %s", self.tags_model_path)
             return
         logger.info("Loading Tagging Model from %s", self.tags_model_path)
-        self.models["tags"] = tf.keras.models.load_model(self.tags_model_path, compile=False)
+        try:
+            self.models["tags"] = load_model(self.tags_model_path, compile=False)
+        except OSError:
+            logger.exception("Failed to load Tagging model from %s", self.tags_model_path)
 
-    def predict_nsfw(self, image_path: str) -> float | None:
+    def predict_nsfw(self, image_path: str) -> float:
         if "nsfw" not in self.models:
-            logger.warning("NSFW model not loaded; returning None")
-            return None
+            logger.error("NSFW model not loaded; returning default score 0.0")
+            return 0.0
         logger.info("Predicting NSFW score for %s", image_path)
-        image_batch = load_image_for_model(image_path, target_size=(224, 224))
+        image_batch = prepare_image(image_path, target_size=(224, 224))
         prediction = self.models["nsfw"].predict(image_batch, verbose=0)[0]
         score = float(prediction[1]) if len(prediction) > 1 else float(prediction[0])
         return score
 
     def predict_tags(self, image_path: str, threshold: float = 0.5) -> Dict[str, List[str]]:
         if "tags" not in self.models:
-            logger.warning("Tag model not loaded; returning empty tag list")
+            logger.error("Tag model not loaded; returning empty tag list")
             return {"tags": [], "characters": []}
         if not self.tags:
-            logger.warning("No tags loaded; returning empty tag list")
+            logger.error("No tags loaded; returning empty tag list")
             return {"tags": [], "characters": []}
 
         logger.info("Predicting tags for %s", image_path)
-        image_batch = load_image_for_model(image_path, target_size=(512, 512))
+        image_batch = prepare_image(image_path, target_size=(512, 512))
         probs = self.models["tags"].predict(image_batch, verbose=0)[0]
 
         tag_count = min(len(self.tags), len(probs))

@@ -22,13 +22,13 @@ def get_image_metadata(path: str) -> Dict[str, Any]:
         return {
             "width": int(width),
             "height": int(height),
-            "size": int(os.path.getsize(path)),
+            "filesize": int(os.path.getsize(path)),
             "format": image.format,
         }
 
 
-def load_image_for_model(path: str, target_size: Tuple[int, int]) -> np.ndarray:
+def prepare_image(path: str, target_size: Tuple[int, int]) -> np.ndarray:
     with Image.open(path) as image:
-        image = image.convert("RGB").resize(target_size)
+        image = image.convert("RGB").resize(target_size, Image.BICUBIC)
         image_array = np.asarray(image, dtype=np.float32) / 255.0
     return np.expand_dims(image_array, axis=0)
