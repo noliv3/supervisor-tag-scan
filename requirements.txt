@@ -5,6 +5,6 @@ aiofiles
 Pillow
 numpy
 pydantic
-# tensorflow-cpu
+tensorflow-cpu
 # onnxruntime-gpu
 # ultralytics

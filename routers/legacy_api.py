@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import List
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from core.bitmask import map_modules_to_flags
+from core.bitmask import FLAG_TAGS, map_modules_to_flags
 from core.model_manager import model_manager
 from routers.auth import verify_token
 
@@ -31,8 +32,12 @@ async def scan_image(request: LegacyRequest) -> dict:
 
     logger.info("Scanning file %s with flags %s", request.file_path, flags)
 
+    tags: List[str] = []
+    if flags & FLAG_TAGS:
+        tags = await asyncio.to_thread(model_manager.predict_tags, request.file_path)
+
     return {
-        "tags": [],
+        "tags": tags,
         "nsfw_scores": {},
         "statistics": {},
     }
