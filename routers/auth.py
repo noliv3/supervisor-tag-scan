@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Optional
 
 import aiofiles
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -14,10 +17,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 TOKENS_PATH = Path("tokens.json")
+SERVER_SECRET = os.getenv("SERVER_SECRET", "change-me")
 
 
 class TokenRequest(BaseModel):
-    token: str
+    mail: Optional[str] = None
+    webseite: Optional[str] = None
 
 
 class TokenResponse(BaseModel):
@@ -25,18 +30,24 @@ class TokenResponse(BaseModel):
     status: str
 
 
-async def _load_tokens() -> Dict[str, str]:
+async def _load_tokens() -> Dict[str, Dict[str, Any]]:
     if not TOKENS_PATH.exists():
         return {}
     async with aiofiles.open(TOKENS_PATH, "r", encoding="utf-8") as handle:
         content = await handle.read()
         data = json.loads(content)
         if isinstance(data, dict):
-            return {str(key): str(value) for key, value in data.items()}
+            normalized: Dict[str, Dict[str, Any]] = {}
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    normalized[str(key)] = value
+                else:
+                    normalized[str(key)] = {"status": str(value)}
+            return normalized
     return {}
 
 
-async def _save_tokens(tokens: Dict[str, str]) -> None:
+async def _save_tokens(tokens: Dict[str, Dict[str, Any]]) -> None:
     async with aiofiles.open(TOKENS_PATH, "w", encoding="utf-8") as handle:
         payload = json.dumps(tokens, indent=2, sort_keys=True)
         await handle.write(payload)
@@ -47,19 +58,49 @@ async def verify_token(token: str) -> bool:
     return token in tokens
 
 
-@router.post("/token/generate", response_model=TokenResponse)
-async def generate_token(request: TokenRequest) -> TokenResponse:
-    tokens = await _load_tokens()
-    tokens[request.token] = "active"
-    await _save_tokens(tokens)
-    logger.info("Generated token")
-    return TokenResponse(token=request.token, status="generated")
+def _build_token(mail: str, webseite: str) -> str:
+    payload = f"{mail}:{webseite}:{SERVER_SECRET}".encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
-@router.post("/token/refresh", response_model=TokenResponse)
-async def refresh_token(request: TokenRequest) -> TokenResponse:
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@router.get("/token", response_model=TokenResponse)
+async def get_token(
+    mail: Optional[str] = Query(default=None),
+    webseite: Optional[str] = Query(default=None),
+) -> TokenResponse:
+    if not mail or not webseite:
+        raise HTTPException(status_code=400, detail="Missing credentials")
+
+    token = _build_token(mail, webseite)
     tokens = await _load_tokens()
-    tokens[request.token] = "refreshed"
+    tokens[token] = {
+        "mail": mail,
+        "webseite": webseite,
+        "status": "alive",
+        "timestamp": _now_iso(),
+    }
     await _save_tokens(tokens)
-    logger.info("Refreshed token")
-    return TokenResponse(token=request.token, status="refreshed")
+    logger.info("Generated alive token for %s", mail)
+    return TokenResponse(token=token, status="alive")
+
+
+@router.post("/token", response_model=TokenResponse)
+async def post_token(request: TokenRequest) -> TokenResponse:
+    if not request.mail or not request.webseite:
+        raise HTTPException(status_code=400, detail="Missing credentials")
+
+    token = _build_token(request.mail, request.webseite)
+    tokens = await _load_tokens()
+    tokens[token] = {
+        "mail": request.mail,
+        "webseite": request.webseite,
+        "status": "alive",
+        "timestamp": _now_iso(),
+    }
+    await _save_tokens(tokens)
+    logger.info("Generated alive token for %s", request.mail)
+    return TokenResponse(token=token, status="alive")
