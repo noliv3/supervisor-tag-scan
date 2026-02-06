@@ -110,6 +110,9 @@ Muss systematisch und konsistent umgesetzt werden.
 - Validierung:
   - `/check`: echte Bildvalidierung (PIL verify wie Legacy).
   - `/scan_image`: corrupt/unreadable handling wie vorhanden.
+- Optionaler Pfad-Whitelist für `/scan_image`:
+  - `SCAN_ALLOWED_ROOTS="/pfad1,/pfad2"` setzt erlaubte Root-Pfade.
+  - Wenn gesetzt, werden nur Dateien unterhalb dieser Roots akzeptiert.
 - Fehlerantworten müssen stabil bleiben, keine internen Details in Legacy-JSON außer dem existierenden `{"error": str(e)}` Verhalten.
 
 ## Persistenz (SQLite)
@@ -173,3 +176,8 @@ Phase 4 Cleanup
 
 - `python main.py` startet das FastAPI/uvicorn Service auf Port 8000.
 - Health: `GET /health`.
+
+## Smoke Test
+
+- `pip install -r requirements-dev.txt`
+- `python tools/legacy_smoke_test.py`

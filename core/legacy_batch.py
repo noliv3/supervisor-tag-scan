@@ -24,6 +24,8 @@ def _resolve_ffmpeg_bin() -> str:
     local_bin = repo_root / "ffmpeg" / "bin" / "ffmpeg"
     if os.name == "nt":
         local_bin = local_bin.with_suffix(".exe")
+    if not Path(local_bin).exists():
+        return str(local_bin)
     return str(local_bin)
 
 
@@ -40,16 +42,19 @@ def _extract_frames(input_path: str, output_dir: str) -> list[Path]:
     output_pattern = str(Path(output_dir) / "frame_%05d.png")
     command = [
         ffmpeg_bin,
+        "-nostdin",
         "-hide_banner",
         "-loglevel",
         "error",
+        "-an",
+        "-sn",
         "-i",
         input_path,
         "-vframes",
         str(MAX_OUT_FRAMES),
         output_pattern,
     ]
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, timeout=30)
     return sorted(Path(output_dir).glob("frame_*.png"))
 
 
