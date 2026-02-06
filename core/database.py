@@ -76,6 +76,12 @@ class ScannerDB:
                     cursor.execute("ALTER TABLE files ADD COLUMN meta_json TEXT")
                 if "nsfw_score" not in existing_columns:
                     cursor.execute("ALTER TABLE files ADD COLUMN nsfw_score FLOAT")
+                if "face_bbox_json" not in existing_columns:
+                    cursor.execute("ALTER TABLE files ADD COLUMN face_bbox_json TEXT")
+                if "vector_blob" not in existing_columns:
+                    cursor.execute("ALTER TABLE files ADD COLUMN vector_blob BLOB")
+                if "last_scanned" not in existing_columns:
+                    cursor.execute("ALTER TABLE files ADD COLUMN last_scanned DATETIME")
                 connection.commit()
         except sqlite3.Error:
             logger.exception("[DATABASE] [INIT] [ERROR]")
@@ -145,6 +151,7 @@ class ScannerDB:
         meta: dict | None = None,
         nsfw_score: float | None = None,
         face_bbox: dict | None = None,
+        vector_blob: bytes | None = None,
     ) -> None:
         meta_json = json.dumps(meta, ensure_ascii=False) if meta is not None else None
         face_bbox_json = json.dumps(face_bbox, ensure_ascii=False) if face_bbox else None
@@ -162,15 +169,17 @@ class ScannerDB:
                         meta_json,
                         nsfw_score,
                         face_bbox_json,
+                        vector_blob,
                         last_scanned
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(hash) DO UPDATE SET
                         path = excluded.path,
                         flags_done = files.flags_done | excluded.flags_done,
                         meta_json = excluded.meta_json,
                         nsfw_score = excluded.nsfw_score,
                         face_bbox_json = excluded.face_bbox_json,
+                        vector_blob = excluded.vector_blob,
                         last_scanned = excluded.last_scanned
                     """,
                     (
@@ -180,6 +189,7 @@ class ScannerDB:
                         meta_json,
                         nsfw_score,
                         face_bbox_json,
+                        sqlite3.Binary(vector_blob) if vector_blob is not None else None,
                         scanned_at,
                     ),
                 )
@@ -194,8 +204,11 @@ class ScannerDB:
         flags_done: int,
         meta: dict | None = None,
         nsfw_score: float | None = None,
+        face_bbox: dict | None = None,
+        vector_blob: bytes | None = None,
     ) -> None:
         meta_json = json.dumps(meta, ensure_ascii=False) if meta is not None else None
+        face_bbox_json = json.dumps(face_bbox, ensure_ascii=False) if face_bbox else None
         scanned_at = datetime.now(timezone.utc).isoformat()
         try:
             with sqlite3.connect(self.db_path) as connection:
@@ -209,14 +222,18 @@ class ScannerDB:
                         flags_done,
                         meta_json,
                         nsfw_score,
+                        face_bbox_json,
+                        vector_blob,
                         last_scanned
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(hash) DO UPDATE SET
                         path = excluded.path,
                         flags_done = files.flags_done | excluded.flags_done,
                         meta_json = COALESCE(excluded.meta_json, files.meta_json),
                         nsfw_score = COALESCE(excluded.nsfw_score, files.nsfw_score),
+                        face_bbox_json = COALESCE(excluded.face_bbox_json, files.face_bbox_json),
+                        vector_blob = COALESCE(excluded.vector_blob, files.vector_blob),
                         last_scanned = excluded.last_scanned
                     """,
                     (
@@ -225,6 +242,8 @@ class ScannerDB:
                         flags_done,
                         meta_json,
                         nsfw_score,
+                        face_bbox_json,
+                        sqlite3.Binary(vector_blob) if vector_blob is not None else None,
                         scanned_at,
                     ),
                 )
@@ -355,9 +374,70 @@ class ScannerDB:
                         """,
                         (today, row[0]),
                     )
+                self._cleanup_tag_trends(cursor)
                 connection.commit()
         except sqlite3.Error:
             logger.exception("[DATABASE] [TAG_TRENDS] [ERROR]")
+
+    def _cleanup_tag_trends(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            """
+            SELECT tag_id, SUM(day_count)
+            FROM tag_trends
+            WHERE date < date('now', '-30 day')
+            GROUP BY tag_id
+            """
+        )
+        old_rows = cursor.fetchall()
+        if not old_rows:
+            return
+        for tag_id, total in old_rows:
+            cursor.execute(
+                """
+                UPDATE tags
+                SET global_count = COALESCE(global_count, 0) + ?
+                WHERE id = ?
+                """,
+                (int(total), int(tag_id)),
+            )
+        cursor.execute(
+            """
+            DELETE FROM tag_trends
+            WHERE date < date('now', '-30 day')
+            """
+        )
+
+    def get_weighted_tag_trends(self, limit: int = 50) -> list[dict]:
+        try:
+            with sqlite3.connect(self.db_path) as connection:
+                cursor = connection.cursor()
+                cursor.execute(
+                    """
+                    SELECT tags.name,
+                           SUM(
+                               CASE
+                                   WHEN tag_trends.date >= date('now', '-1 day') THEN tag_trends.day_count * 3
+                                   WHEN tag_trends.date >= date('now', '-7 day') THEN tag_trends.day_count
+                                   ELSE 0
+                               END
+                           ) AS weighted_count
+                    FROM tag_trends
+                    JOIN tags ON tags.id = tag_trends.tag_id
+                    WHERE tag_trends.date >= date('now', '-7 day')
+                    GROUP BY tag_trends.tag_id
+                    HAVING weighted_count > 0
+                    ORDER BY weighted_count DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+                return [
+                    {"tag": name, "weighted_count": float(weighted_count)}
+                    for name, weighted_count in cursor.fetchall()
+                ]
+        except sqlite3.Error:
+            logger.exception("[DATABASE] [TAG_TRENDS_QUERY] [ERROR]")
+            return []
 
     def record_token_use(self, token: str, mail: str | None = None, webseite: str | None = None) -> None:
         used_at = datetime.now(timezone.utc).isoformat()

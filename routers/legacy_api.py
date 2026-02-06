@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from core import image_utils
-from core.bitmask import FLAG_BASIC, FLAG_NSFW, FLAG_TAGS, map_modules_to_flags
+from core.bitmask import FLAG_BASIC, FLAG_FACE, FLAG_NSFW, FLAG_TAGS, FLAG_VECTOR, map_modules_to_flags
 from core.database import ScannerDB
 from core.model_manager import model_manager
 from routers.auth import verify_token
@@ -57,6 +57,8 @@ async def scan_image(request: LegacyRequest, background_tasks: BackgroundTasks) 
 
     meta = existing.get("meta_json")
     nsfw_score = existing.get("nsfw_score")
+    face_bbox = None
+    vector_blob = None
     tags_data = {
         "tags": existing.get("tags", []),
         "characters": existing.get("characters", []),
@@ -71,7 +73,11 @@ async def scan_image(request: LegacyRequest, background_tasks: BackgroundTasks) 
         return result
 
     if needed_now:
-        model_manager.load_models_for_flags(needed_now)
+        if not model_manager.can_run_flags(needed_now):
+            logger.warning("[LEGACY_API] [RESOURCES] [FALLBACK] %s", path)
+            needed_now = 0
+        else:
+            model_manager.load_models_for_flags(needed_now)
 
     if needed_now & FLAG_BASIC:
         logger.info("[LEGACY_API] [BASIC] [RUN] %s", path)
@@ -94,12 +100,28 @@ async def scan_image(request: LegacyRequest, background_tasks: BackgroundTasks) 
                 ", ".join(characters),
             )
 
+    if needed_now & FLAG_FACE:
+        logger.info("[LEGACY_API] [FACE] [RUN] %s", path)
+        face_bbox = {"boxes": model_manager.predict_face_bboxes(path)}
+
+    if needed_now & FLAG_VECTOR:
+        logger.info("[LEGACY_API] [VECTOR] [RUN] %s", path)
+        vector_blob = model_manager.predict_clip_embedding(path)
+
     result["statistics"] = meta or {}
     result["nsfw_score"] = nsfw_score if nsfw_score is not None else 0.0
     result["tags"] = tags_data.get("tags", []) + tags_data.get("characters", [])
 
     if needed_now:
-        db.upsert_scan_result(file_hash, path, needed_now, meta=meta, nsfw_score=nsfw_score)
+        db.upsert_scan_result(
+            file_hash,
+            path,
+            needed_now,
+            meta=meta,
+            nsfw_score=nsfw_score,
+            face_bbox=face_bbox,
+            vector_blob=vector_blob,
+        )
         if tags_data.get("tags") or tags_data.get("characters"):
             db.save_tags(file_hash, tags_data.get("tags", []), tags_data.get("characters", []))
             background_tasks.add_task(
