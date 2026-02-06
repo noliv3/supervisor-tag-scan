@@ -458,3 +458,27 @@ class ScannerDB:
                 connection.commit()
         except sqlite3.Error:
             logger.exception("[DATABASE] [TOKEN_USE] [ERROR] %s", token)
+
+    def get_legacy_stats(self, top_n: int = 5) -> dict:
+        try:
+            with sqlite3.connect(self.db_path) as connection:
+                cursor = connection.cursor()
+                cursor.execute("SELECT COUNT(*) FROM files")
+                row = cursor.fetchone()
+                count = int(row[0]) if row and row[0] is not None else 0
+                cursor.execute(
+                    """
+                    SELECT tags.name, COUNT(file_tags.file_hash) AS c
+                    FROM file_tags
+                    JOIN tags ON tags.id = file_tags.tag_id
+                    GROUP BY tag_id
+                    ORDER BY c DESC
+                    LIMIT ?
+                    """,
+                    (top_n,),
+                )
+                top_tags = [name for name, _ in cursor.fetchall()]
+                return {"count": count, "top_tags": top_tags}
+        except sqlite3.Error:
+            logger.exception("[DATABASE] [LEGACY_STATS] [ERROR]")
+            return {"count": 0, "top_tags": []}
