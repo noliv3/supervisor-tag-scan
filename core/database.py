@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional
+from typing import Iterable, Optional
 
 
 class ScannerDB:
@@ -75,4 +75,69 @@ class ScannerDB:
                 """,
                 (new_flags, file_hash),
             )
+            connection.commit()
+
+    def save_file_scan(self, file_hash: str, path: str, meta_json: str, flags_done: int) -> None:
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.cursor()
+            cursor.execute("DELETE FROM files WHERE path = ? AND hash != ?", (path, file_hash))
+            cursor.execute(
+                """
+                INSERT INTO files (hash, path, flags_done, meta_json, last_scanned)
+                VALUES (?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(hash) DO UPDATE SET
+                    path = excluded.path,
+                    flags_done = excluded.flags_done,
+                    meta_json = excluded.meta_json,
+                    last_scanned = excluded.last_scanned
+                """,
+                (file_hash, path, flags_done, meta_json),
+            )
+            connection.commit()
+
+    def save_tags(
+        self,
+        file_hash: str,
+        tags_list: Iterable[str],
+        character_tags_list: Iterable[str],
+    ) -> None:
+        tags = list(dict.fromkeys(tag for tag in tags_list if tag))
+        character_tags = set(tag for tag in character_tags_list if tag)
+
+        with sqlite3.connect(self.db_path) as connection:
+            cursor = connection.cursor()
+            cursor.execute("PRAGMA table_info(tags)")
+            columns = {row[1] for row in cursor.fetchall()}
+            has_character_column = "is_character" in columns
+
+            cursor.execute("DELETE FROM file_tags WHERE file_hash = ?", (file_hash,))
+
+            for tag in tags:
+                if has_character_column:
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO tags (name, global_count, is_character)
+                        VALUES (?, ?, ?)
+                        """,
+                        (tag, 0, 1 if tag in character_tags else 0),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO tags (name, global_count)
+                        VALUES (?, ?)
+                        """,
+                        (tag, 0),
+                    )
+                cursor.execute("SELECT id FROM tags WHERE name = ?", (tag,))
+                tag_row = cursor.fetchone()
+                if tag_row is None:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO file_tags (file_hash, tag_id, confidence)
+                    VALUES (?, ?, ?)
+                    """,
+                    (file_hash, tag_row[0], None),
+                )
             connection.commit()

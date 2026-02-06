@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
-from typing import List
+from typing import Dict, List, Set
 
 import numpy as np
 import tensorflow as tf
-from PIL import Image
 
-from core.bitmask import FLAG_FACE, FLAG_NSFW, FLAG_TAGS, FLAG_VECTOR
+from core.bitmask import FLAG_TAGS
+from core.image_utils import load_image_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -21,64 +20,73 @@ class ModelManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance.models = {}
+            cls._instance.base_model_dir = os.path.join("models", "deepdanbooru")
             cls._instance.tags = cls._instance._load_tags()
-            cls._instance.tag_model_path = Path(
-                os.getenv("DEEPDANBOORU_MODEL_PATH", "deepdanbooru-v3-20211112-sgd-e28.h5")
-            )
+            cls._instance.character_tags = cls._instance._load_character_tags()
         return cls._instance
 
-    def load_models_for_flags(self, flags: int) -> None:
-        if flags & FLAG_NSFW:
-            self._load_model("nsfw", "Loading NSFW Model...")
-        if flags & FLAG_TAGS:
-            self._load_tags_model()
-        if flags & FLAG_FACE:
-            self._load_model("face", "Loading Face Detection Model...")
-        if flags & FLAG_VECTOR:
-            self._load_model("vector", "Loading Vector Embedding Model...")
+    def _tags_path(self) -> str:
+        return os.path.join(self.base_model_dir, "tags.txt")
 
-    def _load_model(self, key: str, message: str) -> None:
-        if key in self.models:
-            return
-        logger.info(message)
-        self.models[key] = {"status": "loaded"}
+    def _character_tags_path(self) -> str:
+        return os.path.join(self.base_model_dir, "tags-character.txt")
+
+    def _model_path(self) -> str:
+        return os.path.join(self.base_model_dir, "model.h5")
 
     def _load_tags(self) -> List[str]:
-        tags_path = Path(os.getenv("DEEPDANBOORU_TAGS_PATH", "tags.txt"))
-        if not tags_path.exists():
+        tags_path = self._tags_path()
+        if not os.path.exists(tags_path):
             logger.warning("tags.txt not found at %s", tags_path)
             return []
-        tags = [line.strip() for line in tags_path.read_text(encoding="utf-8").splitlines()]
+        with open(tags_path, "r", encoding="utf-8") as tags_file:
+            tags = [line.strip() for line in tags_file.read().splitlines()]
         return [tag for tag in tags if tag]
+
+    def _load_character_tags(self) -> Set[str]:
+        character_tags_path = self._character_tags_path()
+        if not os.path.exists(character_tags_path):
+            logger.warning("tags-character.txt not found at %s", character_tags_path)
+            return set()
+        with open(character_tags_path, "r", encoding="utf-8") as tags_file:
+            tags = [line.strip() for line in tags_file.read().splitlines()]
+        return {tag for tag in tags if tag}
+
+    def load_models_for_flags(self, flags: int) -> None:
+        if flags & FLAG_TAGS:
+            self._load_tags_model()
 
     def _load_tags_model(self) -> None:
         if "tags" in self.models:
             return
-        if not self.tag_model_path.exists():
-            logger.warning("Tag model not found at %s", self.tag_model_path)
+        model_path = self._model_path()
+        if not os.path.exists(model_path):
+            logger.warning("Tag model not found at %s", model_path)
             return
-        logger.info("Loading Tagging Model from %s", self.tag_model_path)
-        self.models["tags"] = tf.keras.models.load_model(self.tag_model_path)
+        logger.info("Loading Tagging Model from %s", model_path)
+        self.models["tags"] = tf.keras.models.load_model(model_path)
 
-    def predict_tags(self, image_path: str, threshold: float = 0.5) -> List[str]:
+    def predict_tags(self, image_path: str, threshold: float = 0.5) -> Dict[str, List[str]]:
         if "tags" not in self.models:
             logger.warning("Tag model not loaded; returning empty tag list")
-            return []
+            return {"tags": [], "characters": []}
         if not self.tags:
             logger.warning("No tags loaded; returning empty tag list")
-            return []
+            return {"tags": [], "characters": []}
 
-        image = Image.open(image_path).convert("RGB").resize((512, 512))
-        image_array = np.asarray(image, dtype=np.float32) / 255.0
+        image_array = load_image_for_model(image_path)
         image_batch = np.expand_dims(image_array, axis=0)
         probs = self.models["tags"].predict(image_batch, verbose=0)[0]
 
         tag_count = min(len(self.tags), len(probs))
-        return [
+        selected_tags = [
             self.tags[index]
             for index in range(tag_count)
             if float(probs[index]) >= threshold
         ]
+        character_tags = [tag for tag in selected_tags if tag in self.character_tags]
+
+        return {"tags": selected_tags, "characters": character_tags}
 
 
 model_manager = ModelManager()
