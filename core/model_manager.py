@@ -259,6 +259,36 @@ class ModelManager:
         )
         return {"tags": general_tags, "characters": character_tags}
 
+    def predict_deepdanbooru_tags_with_scores(
+        self,
+        image_path: str,
+        threshold: float = 0.2,
+        max_tags: int = 200,
+    ) -> List[dict]:
+        if "tags" not in self.models:
+            raise RuntimeError("Tags model not loaded")
+        if not self.tags:
+            raise RuntimeError("No tags available")
+
+        logger.info("[MODEL_MANAGER] [PREDICT_DDB_TAGS] [START] %s", image_path)
+        try:
+            image_batch = prepare_image(image_path, target_size=(512, 512))
+            probs = self.models["tags"].predict(image_batch, verbose=0)[0]
+            self._touch_model("tags")
+        except Exception as exc:
+            logger.exception("[MODEL_MANAGER] [PREDICT_DDB_TAGS] [ERROR] %s", image_path)
+            raise RuntimeError(str(exc)) from exc
+
+        tag_count = min(len(self.tags), len(probs))
+        tags_with_scores = []
+        for index in range(tag_count):
+            score = float(probs[index])
+            if score >= threshold:
+                tags_with_scores.append({"label": self.tags[index], "score": score})
+
+        tags_with_scores.sort(key=lambda item: item["score"], reverse=True)
+        return tags_with_scores[:max_tags]
+
     def predict_face_bboxes(self, image_path: str) -> List[dict]:
         if "face" not in self.models:
             logger.error("[MODEL_MANAGER] [PREDICT_FACE] [NOT_LOADED] returning empty")
