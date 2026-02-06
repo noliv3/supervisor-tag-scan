@@ -8,6 +8,11 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, UnidentifiedImageError
 
+try:
+    from PIL import ImageFile
+except Exception:
+    ImageFile = None
+
 from core import legacy_batch, legacy_pipeline
 from core.database import ScannerDB
 from routers.auth import verify_token
@@ -17,6 +22,10 @@ db = ScannerDB()
 
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
 MAX_BATCH_SIZE = 25 * 1024 * 1024
+
+Image.MAX_IMAGE_PIXELS = 50_000_000
+if ImageFile is not None:
+    ImageFile.LOAD_TRUNCATED_IMAGES = False
 
 logger = logging.getLogger("legacy_http")
 if not logger.handlers:
@@ -77,7 +86,7 @@ async def check_image(request: Request) -> JSONResponse:
     try:
         with Image.open(BytesIO(image_bytes)) as image:
             image.verify()
-    except (UnidentifiedImageError, OSError, ValueError):
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError):
         return JSONResponse(status_code=400, content={"error": "invalid image"})
 
     result = await legacy_pipeline.process_image_bytes(image_bytes, db)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -24,12 +26,46 @@ class LegacyRequest(BaseModel):
     token: str
 
 
+def _resolve_scan_path(raw_path: str) -> str | None:
+    if not raw_path or not isinstance(raw_path, str):
+        return None
+    path = Path(raw_path).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+    except Exception:
+        return None
+    if not resolved.is_file():
+        return None
+    env = os.getenv("SCAN_ALLOWED_ROOTS", "").strip()
+    if env:
+        roots = [
+            Path(entry.strip()).expanduser().resolve(strict=True)
+            for entry in env.split(",")
+            if entry.strip()
+        ]
+        allowed = any(
+            str(resolved).startswith(str(root) + os.sep) or resolved == root for root in roots
+        )
+        if not allowed:
+            return None
+    return str(resolved)
+
+
 @router.post("/scan_image")
 async def scan_image(request: LegacyRequest, background_tasks: BackgroundTasks) -> dict:
     if not await verify_token(request.token):
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    path = request.file_path
+    resolved = _resolve_scan_path(request.file_path)
+    if not resolved:
+        result: dict = {"file_path": request.file_path}
+        result["error"] = "Failed to read file"
+        result["statistics"] = {}
+        result["nsfw_score"] = 0.0
+        result["tags"] = []
+        return result
+
+    path = resolved
     flags = map_modules_to_flags(request.modules)
 
     logger.info("[LEGACY_API] [SCAN] [START] %s flags=%s", path, flags)
