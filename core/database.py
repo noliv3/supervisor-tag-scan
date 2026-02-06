@@ -21,6 +21,7 @@ class ScannerDB:
                     path TEXT UNIQUE,
                     flags_done INTEGER DEFAULT 0,
                     meta_json TEXT,
+                    nsfw_score FLOAT,
                     face_bbox_json TEXT,
                     vector_blob BLOB,
                     last_scanned DATETIME
@@ -55,6 +56,12 @@ class ScannerDB:
                 )
                 """
             )
+            cursor.execute("PRAGMA table_info(files)")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+            if "meta_json" not in existing_columns:
+                cursor.execute("ALTER TABLE files ADD COLUMN meta_json TEXT")
+            if "nsfw_score" not in existing_columns:
+                cursor.execute("ALTER TABLE files ADD COLUMN nsfw_score FLOAT")
             connection.commit()
 
     def get_file_state(self, file_hash: str) -> Optional[int]:
@@ -79,23 +86,50 @@ class ScannerDB:
             )
             connection.commit()
 
-    def save_file_scan(self, file_hash: str, path: str, meta: dict, flags_done: int) -> None:
-        meta_json = json.dumps(meta, ensure_ascii=False)
+    def save_scan_result(
+        self,
+        file_hash: str,
+        path: str,
+        flags_done: int,
+        meta: dict | None = None,
+        nsfw_score: float | None = None,
+        face_bbox: dict | None = None,
+    ) -> None:
+        meta_json = json.dumps(meta, ensure_ascii=False) if meta is not None else None
+        face_bbox_json = json.dumps(face_bbox, ensure_ascii=False) if face_bbox else None
         scanned_at = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as connection:
             cursor = connection.cursor()
             cursor.execute("DELETE FROM files WHERE path = ? AND hash != ?", (path, file_hash))
             cursor.execute(
                 """
-                INSERT INTO files (hash, path, flags_done, meta_json, last_scanned)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO files (
+                    hash,
+                    path,
+                    flags_done,
+                    meta_json,
+                    nsfw_score,
+                    face_bbox_json,
+                    last_scanned
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(hash) DO UPDATE SET
                     path = excluded.path,
-                    flags_done = excluded.flags_done,
+                    flags_done = files.flags_done | excluded.flags_done,
                     meta_json = excluded.meta_json,
+                    nsfw_score = excluded.nsfw_score,
+                    face_bbox_json = excluded.face_bbox_json,
                     last_scanned = excluded.last_scanned
                 """,
-                (file_hash, path, flags_done, meta_json, scanned_at),
+                (
+                    file_hash,
+                    path,
+                    flags_done,
+                    meta_json,
+                    nsfw_score,
+                    face_bbox_json,
+                    scanned_at,
+                ),
             )
             connection.commit()
 
