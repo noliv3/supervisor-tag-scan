@@ -4,10 +4,12 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Iterable
 
-from core.bitmask import FLAG_NSFW, FLAG_TAGS
-from core.model_manager import model_manager
+from core.legacy_pipeline import (
+    run_deepdanbooru_from_path,
+    run_nsfw_from_path,
+    run_tagging_from_path,
+)
 
 GIF_STEP = 5
 VIDEO_STEP = 20
@@ -18,7 +20,8 @@ def _resolve_ffmpeg_bin() -> str:
     env_bin = os.getenv("FFMPEG_BIN")
     if env_bin:
         return env_bin
-    local_bin = Path("ffmpeg") / "bin" / "ffmpeg"
+    repo_root = Path(__file__).resolve().parent.parent
+    local_bin = repo_root / "ffmpeg" / "bin" / "ffmpeg"
     if os.name == "nt":
         local_bin = local_bin.with_suffix(".exe")
     return str(local_bin)
@@ -37,25 +40,20 @@ def _extract_frames(input_path: str, output_dir: str) -> list[Path]:
     output_pattern = str(Path(output_dir) / "frame_%05d.png")
     command = [
         ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "error",
         "-i",
         input_path,
-        "-vf",
-        "fps=1",
         "-vframes",
         str(MAX_OUT_FRAMES),
         output_pattern,
     ]
-    subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(command, check=True)
     return sorted(Path(output_dir).glob("frame_*.png"))
 
 
-def _collect_ddb_tags(image_path: str) -> Iterable[str]:
-    tags = model_manager.predict_deepdanbooru_tags_with_scores(image_path, threshold=0.2)
-    return [tag.get("label") for tag in tags if isinstance(tag, dict) and tag.get("label")]
-
-
 async def scan_batch(buf: bytes, mime: str = "") -> dict:
-    model_manager.load_models_for_flags(FLAG_NSFW | FLAG_TAGS)
     temp_file = None
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
@@ -72,19 +70,33 @@ async def scan_batch(buf: bytes, mime: str = "") -> dict:
             step = VIDEO_STEP if "video" in mime and "gif" not in mime else GIF_STEP
             indices = _sample_indices(total, step)
 
-            risk = 0.0
+            max_risk = 0.0
             tag_union: set[str] = set()
 
             for index in indices:
                 frame_path = str(frames[index])
-                nsfw_score = model_manager.predict_nsfw(frame_path)
-                risk = max(risk, float(nsfw_score))
-                tag_union.update(_collect_ddb_tags(frame_path))
-                if risk >= 1.0:
+                nsfw_res = run_nsfw_from_path(frame_path)
+                tag_res = run_tagging_from_path(frame_path)
+                ddb_res = run_deepdanbooru_from_path(frame_path)
+                base = max(
+                    float(nsfw_res.get("hentai", 0)),
+                    float(nsfw_res.get("porn", 0)),
+                    float(nsfw_res.get("sexy", 0)),
+                )
+                max_risk = max(max_risk, base)
+                for item in tag_res.get("tags", []) if isinstance(tag_res, dict) else []:
+                    label = item.get("label") if isinstance(item, dict) else None
+                    if label:
+                        tag_union.add(str(label))
+                for item in ddb_res.get("tags", []) if isinstance(ddb_res, dict) else []:
+                    label = item.get("label") if isinstance(item, dict) else None
+                    if label:
+                        tag_union.add(str(label))
+                if max_risk >= 1.0:
                     break
 
             return {
-                "risk": round(risk, 3),
+                "risk": round(max_risk, 3),
                 "tags": sorted(tag_union)[:200],
                 "frameCount": total,
             }

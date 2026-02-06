@@ -70,6 +70,28 @@ class ScannerDB:
                     )
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS legacy_stats (
+                        id INTEGER PRIMARY KEY CHECK(id=1),
+                        count INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO legacy_stats(id,count)
+                    VALUES(1,0)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS legacy_tag_counts (
+                        tag TEXT PRIMARY KEY,
+                        count INTEGER NOT NULL
+                    )
+                    """
+                )
                 cursor.execute("PRAGMA table_info(files)")
                 existing_columns = {row[1] for row in cursor.fetchall()}
                 if "meta_json" not in existing_columns:
@@ -459,25 +481,49 @@ class ScannerDB:
         except sqlite3.Error:
             logger.exception("[DATABASE] [TOKEN_USE] [ERROR] %s", token)
 
+    def record_legacy_tags(self, tags_list: Iterable[str]) -> None:
+        unique_tags = [tag for tag in tags_list if tag]
+        try:
+            with sqlite3.connect(self.db_path) as connection:
+                cursor = connection.cursor()
+                cursor.execute(
+                    """
+                    UPDATE legacy_stats
+                    SET count = count + 1
+                    WHERE id = 1
+                    """
+                )
+                for tag in unique_tags:
+                    cursor.execute(
+                        """
+                        INSERT INTO legacy_tag_counts(tag, count)
+                        VALUES(?, 1)
+                        ON CONFLICT(tag) DO UPDATE SET
+                            count = count + 1
+                        """,
+                        (tag,),
+                    )
+                connection.commit()
+        except sqlite3.Error:
+            logger.exception("[DATABASE] [LEGACY_TAGS] [ERROR]")
+
     def get_legacy_stats(self, top_n: int = 5) -> dict:
         try:
             with sqlite3.connect(self.db_path) as connection:
                 cursor = connection.cursor()
-                cursor.execute("SELECT COUNT(*) FROM files")
+                cursor.execute("SELECT count FROM legacy_stats WHERE id = 1")
                 row = cursor.fetchone()
                 count = int(row[0]) if row and row[0] is not None else 0
                 cursor.execute(
                     """
-                    SELECT tags.name, COUNT(file_tags.file_hash) AS c
-                    FROM file_tags
-                    JOIN tags ON tags.id = file_tags.tag_id
-                    GROUP BY tag_id
-                    ORDER BY c DESC
+                    SELECT tag
+                    FROM legacy_tag_counts
+                    ORDER BY count DESC
                     LIMIT ?
                     """,
                     (top_n,),
                 )
-                top_tags = [name for name, _ in cursor.fetchall()]
+                top_tags = [name for (name,) in cursor.fetchall()]
                 return {"count": count, "top_tags": top_tags}
         except sqlite3.Error:
             logger.exception("[DATABASE] [LEGACY_STATS] [ERROR]")
