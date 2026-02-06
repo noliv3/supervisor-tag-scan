@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import json
 from typing import List
 
 from fastapi import APIRouter, HTTPException
@@ -32,7 +31,7 @@ async def scan_image(request: LegacyRequest) -> dict:
 
     file_hash = image_utils.calculate_hash(request.file_path)
     metadata = image_utils.get_image_metadata(request.file_path)
-    db.save_file_scan(file_hash, request.file_path, json.dumps(metadata), flags_done=0)
+    db.save_file_scan(file_hash, request.file_path, metadata, flags_done=0)
 
     flags = map_modules_to_flags(request.modules)
     model_manager.load_models_for_flags(flags)

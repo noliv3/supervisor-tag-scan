@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 
@@ -77,21 +79,23 @@ class ScannerDB:
             )
             connection.commit()
 
-    def save_file_scan(self, file_hash: str, path: str, meta_json: str, flags_done: int) -> None:
+    def save_file_scan(self, file_hash: str, path: str, meta: dict, flags_done: int) -> None:
+        meta_json = json.dumps(meta, ensure_ascii=False)
+        scanned_at = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as connection:
             cursor = connection.cursor()
             cursor.execute("DELETE FROM files WHERE path = ? AND hash != ?", (path, file_hash))
             cursor.execute(
                 """
                 INSERT INTO files (hash, path, flags_done, meta_json, last_scanned)
-                VALUES (?, ?, ?, ?, datetime('now'))
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(hash) DO UPDATE SET
                     path = excluded.path,
                     flags_done = excluded.flags_done,
                     meta_json = excluded.meta_json,
                     last_scanned = excluded.last_scanned
                 """,
-                (file_hash, path, flags_done, meta_json),
+                (file_hash, path, flags_done, meta_json, scanned_at),
             )
             connection.commit()
 
@@ -101,8 +105,8 @@ class ScannerDB:
         tags_list: Iterable[str],
         character_tags_list: Iterable[str],
     ) -> None:
-        tags = list(dict.fromkeys(tag for tag in tags_list if tag))
-        character_tags = set(tag for tag in character_tags_list if tag)
+        tags = [tag for tag in dict.fromkeys(tags_list) if tag]
+        character_tags = {tag for tag in character_tags_list if tag}
 
         with sqlite3.connect(self.db_path) as connection:
             cursor = connection.cursor()
@@ -129,10 +133,12 @@ class ScannerDB:
                         """,
                         (tag, 0),
                     )
+
                 cursor.execute("SELECT id FROM tags WHERE name = ?", (tag,))
                 tag_row = cursor.fetchone()
                 if tag_row is None:
                     continue
+
                 cursor.execute(
                     """
                     INSERT INTO file_tags (file_hash, tag_id, confidence)

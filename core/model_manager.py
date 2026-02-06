@@ -31,8 +31,17 @@ class ModelManager:
     def _character_tags_path(self) -> str:
         return os.path.join(self.base_model_dir, "tags-character.txt")
 
-    def _model_path(self) -> str:
-        return os.path.join(self.base_model_dir, "model.h5")
+    def _model_path(self) -> str | None:
+        if not os.path.isdir(self.base_model_dir):
+            return None
+        model_files = sorted(
+            file_name
+            for file_name in os.listdir(self.base_model_dir)
+            if file_name.lower().endswith(".h5")
+        )
+        if not model_files:
+            return None
+        return os.path.join(self.base_model_dir, model_files[0])
 
     def _load_tags(self) -> List[str]:
         tags_path = self._tags_path()
@@ -60,8 +69,8 @@ class ModelManager:
         if "tags" in self.models:
             return
         model_path = self._model_path()
-        if not os.path.exists(model_path):
-            logger.warning("Tag model not found at %s", model_path)
+        if not model_path:
+            logger.warning("Tag model not found in %s", self.base_model_dir)
             return
         logger.info("Loading Tagging Model from %s", model_path)
         self.models["tags"] = tf.keras.models.load_model(model_path)
@@ -85,8 +94,9 @@ class ModelManager:
             if float(probs[index]) >= threshold
         ]
         character_tags = [tag for tag in selected_tags if tag in self.character_tags]
+        general_tags = [tag for tag in selected_tags if tag not in self.character_tags]
 
-        return {"tags": selected_tags, "characters": character_tags}
+        return {"tags": general_tags, "characters": character_tags}
 
 
 model_manager = ModelManager()
