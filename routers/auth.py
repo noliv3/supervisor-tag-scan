@@ -12,9 +12,12 @@ import aiofiles
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from core.database import ScannerDB
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+db = ScannerDB()
 
 TOKENS_PATH = Path("tokens.json")
 SERVER_SECRET = os.getenv("SERVER_SECRET", "change-me")
@@ -55,7 +58,11 @@ async def _save_tokens(tokens: Dict[str, Dict[str, Any]]) -> None:
 
 async def verify_token(token: str) -> bool:
     tokens = await _load_tokens()
-    return token in tokens
+    if token in tokens:
+        token_info = tokens.get(token, {})
+        db.record_token_use(token, token_info.get("mail"), token_info.get("webseite"))
+        return True
+    return False
 
 
 def _build_token(mail: str, webseite: str) -> str:
@@ -84,7 +91,8 @@ async def get_token(
         "timestamp": _now_iso(),
     }
     await _save_tokens(tokens)
-    logger.info("Generated alive token for %s", mail)
+    db.record_token_use(token, mail, webseite)
+    logger.info("[AUTH] [TOKEN] [ISSUED] %s", mail)
     return TokenResponse(token=token, status="alive")
 
 
@@ -102,5 +110,6 @@ async def post_token(request: TokenRequest) -> TokenResponse:
         "timestamp": _now_iso(),
     }
     await _save_tokens(tokens)
-    logger.info("Generated alive token for %s", request.mail)
+    db.record_token_use(token, request.mail, request.webseite)
+    logger.info("[AUTH] [TOKEN] [ISSUED] %s", request.mail)
     return TokenResponse(token=token, status="alive")
