@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-multipart
+aiofiles
+Pillow
+numpy
+pydantic
+# tensorflow-cpu
+# onnxruntime-gpu
+# ultralytics
