@@ -70,16 +70,16 @@ def _cleanup_legacy_tokens(tokens: Dict[str, Any]) -> bool:
         if not _is_legacy_entry(value):
             continue
         if isinstance(value, dict):
-            ts_value = value.get("ts")
-            if ts_value is None:
-                continue
+            ts_value = value.get("ts", 0)
             try:
                 ts_int = int(ts_value)
             except (TypeError, ValueError):
-                continue
-            if now - ts_int > EXPIRY_SECONDS:
-                tokens.pop(key, None)
-                changed = True
+                ts_int = 0
+        else:
+            ts_int = 0
+        if now - ts_int > EXPIRY_SECONDS:
+            tokens.pop(key, None)
+            changed = True
     return changed
 
 
@@ -138,11 +138,8 @@ async def legacy_get_token(email: str, renew: bool) -> str:
     changed = _cleanup_legacy_tokens(tokens)
     entry = tokens.get(email)
     token: str | None = None
-    if not renew and entry is not None:
-        if isinstance(entry, dict) and entry.get("token"):
-            token = str(entry.get("token"))
-        elif isinstance(entry, str):
-            token = entry
+    if not renew and entry is not None and isinstance(entry, dict) and entry.get("token"):
+        token = str(entry.get("token"))
 
     if token is None:
         token = secrets.token_hex(16)

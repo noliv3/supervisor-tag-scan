@@ -6,7 +6,6 @@ import os
 import secrets
 import tempfile
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,10 +57,22 @@ def _run_nsfw(image_path: str) -> dict:
     }
 
 
-def _run_deepdanbooru(image_path: str) -> dict:
+def _run_deepdanbooru(image_path: str, threshold: float = 0.2) -> dict:
     model_manager.load_models_for_flags(FLAG_TAGS)
-    tags = model_manager.predict_deepdanbooru_tags_with_scores(image_path)
+    tags = model_manager.predict_deepdanbooru_tags_with_scores(image_path, threshold=threshold)
     return {"tags": tags}
+
+
+def run_tagging_from_path(image_path: str) -> dict:
+    return _run_tagging(image_path)
+
+
+def run_nsfw_from_path(image_path: str) -> dict:
+    return _run_nsfw(image_path)
+
+
+def run_deepdanbooru_from_path(image_path: str) -> dict:
+    return _run_deepdanbooru(image_path)
 
 
 def _extract_labels(tag_result: dict, key: str) -> list[str]:
@@ -79,37 +90,36 @@ def _run_statistics(result: dict, db: ScannerDB) -> dict:
     ddb_labels = _extract_labels(result.get("modules.deepdanbooru_tags", {}), "tags")
     all_labels = tagging_labels + ddb_labels
     db.update_tag_trends(all_labels)
+    db.record_legacy_tags(all_labels)
     return {"recorded": len(all_labels)}
 
 
 def _run_image_storage(image_bytes: bytes, result: dict) -> dict:
-    tagging_labels = _extract_labels(result.get("modules.tagging", {}), "tags")
-    ddb_labels = _extract_labels(result.get("modules.deepdanbooru_tags", {}), "tags")
-    nsfw_data = result.get("modules.nsfw_scanner", {})
+    tag_module = result.get("modules.tagging", {})
+    ddb_module = result.get("modules.deepdanbooru_tags", {})
+    tags_raw = tag_module.get("tags") if isinstance(tag_module, dict) else None
+    ddb_raw = ddb_module.get("tags") if isinstance(ddb_module, dict) else None
+    nsfw_meta = result.get("modules.nsfw_scanner", {})
 
-    scanned_root = Path("scanned")
-    subdir = datetime.now().strftime("%Y_%m")
-    output_dir = scanned_root / subdir
+    output_dir = Path("scanned") / time.strftime("%Y_%m")
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{int(time.time() * 1000)}_{secrets.token_hex(4)}.jpg"
+    filename = f"{time.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}.jpg"
     output_path = output_dir / filename
 
     with Image.open(io.BytesIO(image_bytes)) as image:
         image = image.convert("RGB")
-        width, height = image.size
         image.thumbnail((1280, 720), Image.BICUBIC)
-        image.save(output_path, format="JPEG", quality=90)
+        image.save(output_path, format="JPEG")
+        width, height = image.width, image.height
 
     metadata = {
         "width": int(width),
         "height": int(height),
-        "tags": tagging_labels,
-        "danbooru_tags": ddb_labels,
+        "tags": tags_raw,
+        "danbooru_tags": ddb_raw,
     }
-    if isinstance(nsfw_data, dict) and "error" not in nsfw_data:
-        metadata.update(nsfw_data)
+    if isinstance(nsfw_meta, dict):
+        metadata.update(nsfw_meta)
 
     return {"path": str(output_path), "metadata": metadata}
 
@@ -124,19 +134,19 @@ async def process_image_bytes(image_bytes: bytes, db: ScannerDB) -> dict:
             temp_path = temp_file.name
 
         try:
-            result["modules.nsfw_scanner"] = _run_nsfw(temp_path)
+            result["modules.nsfw_scanner"] = run_nsfw_from_path(temp_path)
         except Exception as exc:
             logger.exception("[LEGACY_PIPELINE] [NSFW] [ERROR]")
             result["modules.nsfw_scanner"] = {"error": str(exc)}
 
         try:
-            result["modules.tagging"] = _run_tagging(temp_path)
+            result["modules.tagging"] = run_tagging_from_path(temp_path)
         except Exception as exc:
             logger.exception("[LEGACY_PIPELINE] [TAGGING] [ERROR]")
             result["modules.tagging"] = {"error": str(exc)}
 
         try:
-            result["modules.deepdanbooru_tags"] = _run_deepdanbooru(temp_path)
+            result["modules.deepdanbooru_tags"] = run_deepdanbooru_from_path(temp_path)
         except Exception as exc:
             logger.exception("[LEGACY_PIPELINE] [DDB] [ERROR]")
             result["modules.deepdanbooru_tags"] = {"error": str(exc)}
